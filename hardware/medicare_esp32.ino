@@ -30,17 +30,20 @@
   ------------------------------------------------------------------
   WEBSITE API CONTRACT THIS FIRMWARE EXPECTS
   ------------------------------------------------------------------
-  GET  {SERVER_BASE}/api/schedule?device_id=medbuddy01
+  GET  {SERVER_BASE}/api/device/schedule?deviceId=DEVICE_ID
        -> 200 OK
-       -> {"morning":{"hour":9,"minute":0},
-           "afternoon":{"hour":14,"minute":0},
-           "night":{"hour":21,"minute":0}}
+       -> {"success":true,
+           "deviceId":"MED-DEA224",
+           "morning":"08:00",
+           "afternoon":"14:00",
+           "night":"20:00",
+           "active":true,
+           "taken":{"morning":false,"afternoon":false,"night":false}}
 
-  POST {SERVER_BASE}/api/dose-log
+  POST {SERVER_BASE}/api/device/status
        Content-Type: application/json
-       -> {"device_id":"medbuddy01","slot":"morning","status":"taken",
-           "timestamp":"2026-08-30T09:03:12"}
-       status is one of: "taken", "missed"
+       -> {"deviceId":"MED-DEA224","slot":"morning","status":"taken","date":"2026-08-31"}
+       status is one of: "taken", "reset"
 */
 
 #include <Wire.h>
@@ -52,8 +55,8 @@
 // ---------- Wi-Fi + backend config ----------
 const char* WIFI_SSID     = "chotelog";
 const char* WIFI_PASSWORD = "omsaibaba";
-const char* SERVER_BASE   = "http://192.168.1.103:3000";   // your FastAPI backend
-const char* DEVICE_ID     = "medbuddy01";
+const char* SERVER_BASE   = "http://192.168.1.103:3000";
+const char* DEVICE_ID     = "MED-DEA224";
 
 // ---------- Pin assignments ----------
 const int SENSOR_PIN[3] = { 4, 5, 18 };   // Morning, Afternoon, Night
@@ -79,9 +82,9 @@ unsigned long lastScheduleFetch = 0;
 // ---------- Schedule (fallback defaults; overwritten by fetchSchedule()) ----------
 struct DoseTime { int hour; int minute; };
 DoseTime schedule[3] = {
-  { 9, 0 },   // Morning   9:00 AM
+  { 8, 0 },   // Morning   8:00 AM
   { 14, 0 },  // Afternoon 2:00 PM
-  { 21, 0 }   // Night     9:00 PM
+  { 20, 0 }   // Night     8:00 PM
 };
 
 // ---------- Per-slot state ----------
@@ -156,12 +159,13 @@ void connectWiFi() {
 }
 
 // ---------------------------------------------------------------
-// Pulls {"morning":{"hour":9,"minute":0}, "afternoon":{...}, "night":{...}} from the website.
+// Pulls schedule from: GET /api/device/schedule?deviceId=MED-DEA224
+// Response: {"morning":"08:00","afternoon":"14:00","night":"20:00","active":true,"taken":{...}}
 void fetchSchedule() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
-  String url = String(SERVER_BASE) + "/api/schedule?device_id=" + DEVICE_ID;
+  String url = String(SERVER_BASE) + "/api/device/schedule?deviceId=" + DEVICE_ID;
   http.begin(url);
   int code = http.GET();
 
@@ -170,18 +174,27 @@ void fetchSchedule() {
     StaticJsonDocument<512> doc;
     DeserializationError err = deserializeJson(doc, body);
     if (!err) {
-      schedule[0].hour   = doc["morning"]["hour"]     | schedule[0].hour;
-      schedule[0].minute = doc["morning"]["minute"]   | schedule[0].minute;
-      schedule[1].hour   = doc["afternoon"]["hour"]   | schedule[1].hour;
-      schedule[1].minute = doc["afternoon"]["minute"] | schedule[1].minute;
-      schedule[2].hour   = doc["night"]["hour"]       | schedule[2].hour;
-      schedule[2].minute = doc["night"]["minute"]     | schedule[2].minute;
-      Serial.println("Schedule updated from server.");
+      // Parse "HH:MM" time strings into hour and minute integers
+      const char* slots[3] = { "morning", "afternoon", "night" };
+      for (int i = 0; i < 3; i++) {
+        const char* timeStr = doc[slots[i]] | nullptr;
+        if (timeStr) {
+          int h = 0, m = 0;
+          if (sscanf(timeStr, "%d:%d", &h, &m) == 2) {
+            schedule[i].hour = h;
+            schedule[i].minute = m;
+          }
+        }
+      }
+      Serial.printf("Schedule updated from server: %02d:%02d / %02d:%02d / %02d:%02d\n",
+                     schedule[0].hour, schedule[0].minute,
+                     schedule[1].hour, schedule[1].minute,
+                     schedule[2].hour, schedule[2].minute);
     } else {
       Serial.println("Schedule JSON parse failed - using existing/default times.");
     }
   } else {
-    Serial.println("Could not reach server - using existing/default schedule.");
+    Serial.printf("Could not reach server (HTTP %d) - using existing/default schedule.\n", code);
   }
   http.end();
 }
@@ -255,6 +268,8 @@ void updateBuzzer() {
 }
 
 // ---------------------------------------------------------------
+// Sends dose event to: POST /api/device/status
+// Body: {"deviceId":"MED-DEA224","slot":"morning","status":"taken","date":"2026-08-31"}
 void sendDoseEvent(const char* slot, const char* status, DateTime now) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected - event logged locally only.");
@@ -262,22 +277,30 @@ void sendDoseEvent(const char* slot, const char* status, DateTime now) {
   }
 
   HTTPClient http;
-  http.begin(String(SERVER_BASE) + "/api/dose-log");
+  http.begin(String(SERVER_BASE) + "/api/device/status");
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
-  doc["device_id"] = DEVICE_ID;
+  doc["deviceId"] = DEVICE_ID;
   doc["slot"] = slot;
   doc["status"] = status;
-  char ts[25];
-  snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02d",
-           now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
-  doc["timestamp"] = ts;
+
+  // Build date string: "YYYY-MM-DD"
+  char dateStr[11];
+  snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d",
+           now.year(), now.month(), now.day());
+  doc["date"] = dateStr;
 
   String payload;
   serializeJson(doc, payload);
 
   int code = http.POST(payload);
-  Serial.printf("Sent %s event for %s slot, server responded %d\n", status, slot, code);
+  if (code > 0) {
+    Serial.printf("Sent %s event for %s slot, server responded %d\n", status, slot, code);
+    String response = http.getString();
+    Serial.println(response);
+  } else {
+    Serial.printf("Failed to send %s event for %s slot, error: %d\n", status, slot, code);
+  }
   http.end();
 }
