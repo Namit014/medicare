@@ -241,7 +241,7 @@ export default function LoginPage() {
             <div className="grid grid-cols-2 gap-3.5">
               <button 
                 type="button"
-                onClick={() => alert("Google sign-in clicked.")}
+                onClick={() => window.location.href = "/api/auth/google"}
                 className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-zinc-900 bg-zinc-950 text-sm font-semibold hover:bg-zinc-900 transition-colors cursor-pointer"
               >
                 Google
