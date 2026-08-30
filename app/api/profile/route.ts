@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
 
     const { data: profile, error } = await supabaseAdmin
       .from("profiles")
-      .select("name, role, device_id, email:auth.users.email")
+      .select("name, role, device_id")
       .eq("id", user.id)
       .single();
 
