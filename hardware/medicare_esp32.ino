@@ -7,10 +7,12 @@
   event is logged to the website after MISSED_THRESHOLD_MS, but that log entry does
   NOT silence the buzzer - the hardware keeps enforcing the rule regardless.
 
+  TIME SYNC: Uses NTP (Network Time Protocol) over WiFi instead of a hardware RTC.
+  The DS3231 module is NOT required. Time is synced on boot and re-synced every hour.
+
   ------------------------------------------------------------------
   WIRING
   ------------------------------------------------------------------
-  DS3231 RTC           SDA -> GPIO21   SCL -> GPIO22   VCC -> 3V3   GND -> GND
   IR Sensor Morning    OUT -> GPIO4    VCC -> 5V(VIN)   GND -> GND
   IR Sensor Afternoon  OUT -> GPIO5    VCC -> 5V(VIN)   GND -> GND
   IR Sensor Night      OUT -> GPIO18   VCC -> 5V(VIN)   GND -> GND
@@ -22,9 +24,8 @@
   ------------------------------------------------------------------
   LIBRARIES REQUIRED (Arduino IDE Library Manager)
   ------------------------------------------------------------------
-  - RTClib        by Adafruit
   - ArduinoJson   by Benoit Blanchon
-  - WiFi.h and HTTPClient.h ship with the ESP32 board package
+  - WiFi.h, HTTPClient.h, time.h ship with the ESP32 board package
     (Boards Manager -> install "esp32 by Espressif Systems")
 
   ------------------------------------------------------------------
@@ -46,17 +47,21 @@
        status is one of: "taken", "reset"
 */
 
-#include <Wire.h>
-#include <RTClib.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 // ---------- Wi-Fi + backend config ----------
 const char* WIFI_SSID     = "chotelog";
 const char* WIFI_PASSWORD = "omsaibaba";
 const char* SERVER_BASE   = "http://192.168.1.103:3000";
 const char* DEVICE_ID     = "MED-DEA224";
+
+// ---------- NTP config ----------
+const char* NTP_SERVER    = "pool.ntp.org";
+const long  GMT_OFFSET_SEC = 19800;  // IST (UTC+5:30) — adjust for your timezone
+const int   DST_OFFSET_SEC = 0;
 
 // ---------- Pin assignments ----------
 const int SENSOR_PIN[3] = { 4, 5, 18 };   // Morning, Afternoon, Night
@@ -93,21 +98,13 @@ bool resolved[3]     = { false, false, false }; // pill has been picked up today
 bool missedLogged[3] = { false, false, false }; // "missed" already sent today
 unsigned long dueMillis[3] = { 0, 0, 0 };
 int  lastResetDay = -1;
-
-RTC_DS3231 rtc;
+bool timeReady = false;
+struct tm timeinfo;
 
 // ---------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
   delay(300);
-
-  Wire.begin();
-  if (!rtc.begin()) {
-    Serial.println("RTC not found - check wiring.");
-  }
-  // Uncomment ONCE to set the RTC to your computer's clock, upload, then
-  // re-comment this line and upload again (otherwise it resets time on every boot):
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
   for (int i = 0; i < 3; i++) {
     pinMode(SENSOR_PIN[i], INPUT);
@@ -118,23 +115,33 @@ void setup() {
   digitalWrite(BUZZER_PIN, LOW);
 
   connectWiFi();
+  configTime(GMT_OFFSET_SEC, DST_OFFSET_SEC, NTP_SERVER);
+  timeReady = getLocalTime(&timeinfo);
+  if (!timeReady) {
+    Serial.println("NTP sync failed - time may be incorrect until sync succeeds.");
+  }
   fetchSchedule();   // pulls Morning/Afternoon/Night times set on the website, if reachable
   lastScheduleFetch = millis();
 }
 
 // ---------------------------------------------------------------
 void loop() {
-  DateTime now = rtc.now();
-  resetIfNewDay(now);
+  timeReady = getLocalTime(&timeinfo);
+  if (!timeReady) {
+    Serial.println("NTP re-sync failed this cycle.");
+    delay(500);
+    return;
+  }
+  resetIfNewDay(timeinfo);
 
   if (millis() - lastScheduleFetch > SCHEDULE_REFRESH_MS) {
     fetchSchedule();   // picks up any time the caregiver just changed on the website
     lastScheduleFetch = millis();
   }
 
-  checkSchedule(now);
-  checkSensors(now);
-  checkMissed(now);
+  checkSchedule(timeinfo);
+  checkSensors(timeinfo);
+  checkMissed(timeinfo);
   updateBuzzer();
   delay(500);
 }
@@ -154,7 +161,7 @@ void connectWiFi() {
     Serial.print("WiFi connected, IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("WiFi not connected - running on RTC + default schedule only.");
+    Serial.println("WiFi not connected - running on NTP + default schedule only.");
   }
 }
 
@@ -200,35 +207,35 @@ void fetchSchedule() {
 }
 
 // ---------------------------------------------------------------
-void resetIfNewDay(DateTime now) {
-  if (now.day() != lastResetDay) {
+void resetIfNewDay(struct tm &t) {
+  if (t.tm_mday != lastResetDay) {
     for (int i = 0; i < 3; i++) {
       due[i] = false;
       resolved[i] = false;
       missedLogged[i] = false;
       digitalWrite(LED_PIN[i], LOW);
     }
-    lastResetDay = now.day();
+    lastResetDay = t.tm_mday;
     fetchSchedule();   // pick up any schedule change made on the website overnight
     Serial.println("New day - all slots reset.");
   }
 }
 
 // ---------------------------------------------------------------
-void checkSchedule(DateTime now) {
+void checkSchedule(struct tm &t) {
   for (int i = 0; i < 3; i++) {
-    if (!due[i] && now.hour() == schedule[i].hour && now.minute() == schedule[i].minute) {
+    if (!due[i] && t.tm_hour == schedule[i].hour && t.tm_min == schedule[i].minute) {
       due[i] = true;
       dueMillis[i] = millis();
       digitalWrite(LED_PIN[i], HIGH);
       Serial.printf("[%02d:%02d:%02d] %s slot -> BUZZER ON\n",
-                     now.hour(), now.minute(), now.second(), SLOT_NAME[i]);
+                     t.tm_hour, t.tm_min, t.tm_sec, SLOT_NAME[i]);
     }
   }
 }
 
 // ---------------------------------------------------------------
-void checkSensors(DateTime now) {
+void checkSensors(struct tm &t) {
   for (int i = 0; i < 3; i++) {
     if (due[i] && !resolved[i]) {
       int reading = digitalRead(SENSOR_PIN[i]);
@@ -236,8 +243,8 @@ void checkSensors(DateTime now) {
         resolved[i] = true;
         digitalWrite(LED_PIN[i], LOW);
         Serial.printf("[%02d:%02d:%02d] %s slot -> pill removed, BUZZER OFF, logged TAKEN\n",
-                       now.hour(), now.minute(), now.second(), SLOT_NAME[i]);
-        sendDoseEvent(SLOT_NAME[i], "taken", now);
+                       t.tm_hour, t.tm_min, t.tm_sec, SLOT_NAME[i]);
+        sendDoseEvent(SLOT_NAME[i], "taken", t);
       }
     }
   }
@@ -245,14 +252,14 @@ void checkSensors(DateTime now) {
 
 // ---------------------------------------------------------------
 // Logs a "missed" event once, for dashboard visibility only - does NOT touch the buzzer.
-void checkMissed(DateTime now) {
+void checkMissed(struct tm &t) {
   for (int i = 0; i < 3; i++) {
     if (due[i] && !resolved[i] && !missedLogged[i] &&
         (millis() - dueMillis[i] > MISSED_THRESHOLD_MS)) {
       missedLogged[i] = true;
       Serial.printf("[%02d:%02d:%02d] %s slot -> still not picked up, logged MISSED (buzzer still ON)\n",
-                     now.hour(), now.minute(), now.second(), SLOT_NAME[i]);
-      sendDoseEvent(SLOT_NAME[i], "missed", now);
+                     t.tm_hour, t.tm_min, t.tm_sec, SLOT_NAME[i]);
+      sendDoseEvent(SLOT_NAME[i], "missed", t);
     }
   }
 }
@@ -270,7 +277,7 @@ void updateBuzzer() {
 // ---------------------------------------------------------------
 // Sends dose event to: POST /api/device/status
 // Body: {"deviceId":"MED-DEA224","slot":"morning","status":"taken","date":"2026-08-31"}
-void sendDoseEvent(const char* slot, const char* status, DateTime now) {
+void sendDoseEvent(const char* slot, const char* status, struct tm &t) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected - event logged locally only.");
     return;
@@ -288,7 +295,7 @@ void sendDoseEvent(const char* slot, const char* status, DateTime now) {
   // Build date string: "YYYY-MM-DD"
   char dateStr[11];
   snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d",
-           now.year(), now.month(), now.day());
+           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
   doc["date"] = dateStr;
 
   String payload;
