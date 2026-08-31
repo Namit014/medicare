@@ -119,37 +119,7 @@ export default function LoginPage() {
                 )}
               </button>
             </div>
-<<<<<<< HEAD
           </form>
-=======
-
-            {/* Social Logins */}
-            <div className="grid grid-cols-2 gap-3.5">
-              <button 
-                type="button"
-                onClick={() => window.location.href = "/api/auth/google"}
-                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-zinc-900 bg-zinc-950 text-sm font-semibold hover:bg-zinc-900 transition-colors cursor-pointer"
-              >
-                Google
-              </button>
-              <button 
-                type="button"
-                onClick={() => alert("Facebook sign-in clicked.")}
-                className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-zinc-900 bg-zinc-950 text-sm font-semibold hover:bg-zinc-900 transition-colors cursor-pointer"
-              >
-                Facebook
-              </button>
-            </div>
-
-            <p className="mt-6 text-center text-sm text-zinc-500">
-              New to Medicare?{" "}
-              <Link href="/signup" className="font-semibold text-purple-400 hover:text-purple-300 hover:underline">
-                Create an account
-              </Link>
-            </p>
-          </div>
-
->>>>>>> 8f3e8387a5abfc393a3eb668715a61e2f0afe4e7
         </div>
       </div>
 
