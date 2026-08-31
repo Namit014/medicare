@@ -1,274 +1,306 @@
-/**
- * Medicare ESP32 Pill Reminder System Sketch
- * 
- * Hardware Requirements:
- * - ESP32 Development Board
- * - DS3231 RTC Module (I2C)
- * - 3x Pill Removal Sensors (e.g., switches/limit switches or infrared sensors)
- * - 3x LED Indicators (Morning, Afternoon, Night)
- * - 1x Active Buzzer
- * - 1x Push Button (Manual Mute)
- * 
- * Instructions:
- * 1. Update the Wi-Fi credentials (WIFI_SSID, WIFI_PASSWORD) below.
- * 2. Update the HOST_SERVER address to point to your deployed Medicare server or local IP.
- * 3. Update the DEVICE_ID to match the ID registered in your user dashboard.
- * 4. Install the required libraries via the Arduino Library Manager:
- *    - "ArduinoJson" by Benoit Blanchon (v6 or v7)
- *    - "RTClib" by Adafruit
- */
+/*
+  MedBuddy - Smart Medicine Reminder
+  ESP32 firmware: Morning / Afternoon / Night reminder with sensor-confirmed shutoff.
 
+  RULE: The buzzer turns OFF only when that slot's own IR sensor confirms the pill
+  was removed. There is no mute button and no timeout cap - by design. A "missed"
+  event is logged to the website after MISSED_THRESHOLD_MS, but that log entry does
+  NOT silence the buzzer - the hardware keeps enforcing the rule regardless.
+
+  ------------------------------------------------------------------
+  WIRING
+  ------------------------------------------------------------------
+  DS3231 RTC           SDA -> GPIO21   SCL -> GPIO22   VCC -> 3V3   GND -> GND
+  IR Sensor Morning    OUT -> GPIO4    VCC -> 5V(VIN)   GND -> GND
+  IR Sensor Afternoon  OUT -> GPIO5    VCC -> 5V(VIN)   GND -> GND
+  IR Sensor Night      OUT -> GPIO18   VCC -> 5V(VIN)   GND -> GND
+  LED Morning    Anode -> GPIO19 (through 220ohm resistor)   Cathode -> GND
+  LED Afternoon  Anode -> GPIO23 (through 220ohm resistor)   Cathode -> GND
+  LED Night      Anode -> GPIO25 (through 220ohm resistor)   Cathode -> GND
+  Buzzer  Signal -> GPIO26   GND -> GND
+
+  ------------------------------------------------------------------
+  LIBRARIES REQUIRED (Arduino IDE Library Manager)
+  ------------------------------------------------------------------
+  - RTClib        by Adafruit
+  - ArduinoJson   by Benoit Blanchon
+  - WiFi.h and HTTPClient.h ship with the ESP32 board package
+    (Boards Manager -> install "esp32 by Espressif Systems")
+
+  ------------------------------------------------------------------
+  WEBSITE API CONTRACT THIS FIRMWARE EXPECTS
+  ------------------------------------------------------------------
+  GET  {SERVER_BASE}/api/device/schedule?deviceId=DEVICE_ID
+       -> 200 OK
+       -> {"success":true,
+           "deviceId":"MED-DEA224",
+           "morning":"08:00",
+           "afternoon":"14:00",
+           "night":"20:00",
+           "active":true,
+           "taken":{"morning":false,"afternoon":false,"night":false}}
+
+  POST {SERVER_BASE}/api/device/status
+       Content-Type: application/json
+       -> {"deviceId":"MED-DEA224","slot":"morning","status":"taken","date":"2026-08-31"}
+       status is one of: "taken", "reset"
+*/
+
+#include <Wire.h>
+#include <RTClib.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <Wire.h>
-#include <RTClib.h>
 
-// Wi-Fi Config
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+// ---------- Wi-Fi + backend config ----------
+const char* WIFI_SSID     = "chotelog";
+const char* WIFI_PASSWORD = "omsaibaba";
+const char* SERVER_BASE   = "http://192.168.1.103:3000";
+const char* DEVICE_ID     = "MED-DEA224";
 
-// Server Config
-// Replace with your local machine's IP (e.g. "http://192.168.1.100:3000") or your production URL (e.g. "https://medicare.vercel.app")
-const char* HOST_SERVER = "http://192.168.1.100:3000";
-const char* DEVICE_ID = "MED-XXXXXX"; // Change this to your linked Device ID from the web dashboard
+// ---------- Pin assignments ----------
+const int SENSOR_PIN[3] = { 4, 5, 18 };   // Morning, Afternoon, Night
+const int LED_PIN[3]    = { 19, 23, 25 };
+const int BUZZER_PIN    = 26;
 
-// Hardware Pin Definitions
-#define PIN_LED_MORNING     12  // LED for Morning Slot
-#define PIN_LED_AFTERNOON   14  // LED for Afternoon Slot
-#define PIN_LED_NIGHT       27  // LED for Night Slot
+// Most IR break-beam / obstacle modules pull the OUT pin LOW when the beam is
+// broken (pill removed). Check yours with a quick Serial.println() test first -
+// if it's backwards, flip this to HIGH.
+const int SENSOR_ACTIVE_STATE = LOW;
 
-#define PIN_SENSOR_MORNING   32  // Switch/sensor for Morning Slot (HIGH = pill present, LOW = pill removed)
-#define PIN_SENSOR_AFTERNOON 33  // Switch/sensor for Afternoon Slot
-#define PIN_SENSOR_NIGHT     34  // Switch/sensor for Night Slot
+const char* SLOT_NAME[3] = { "morning", "afternoon", "night" };
 
-#define PIN_BUZZER           25  // Active buzzer
-#define PIN_MUTE_BUTTON      26  // Manual button to mute alarm buzzer
+// Log (but don't silence) a slot as "missed" if it's been unresolved this long.
+const unsigned long MISSED_THRESHOLD_MS = 15UL * 60UL * 1000UL; // 15 minutes
 
-// Global Objects
+// Re-check the website for schedule changes this often, so a caregiver editing
+// the Morning/Afternoon/Night time on the site doesn't have to wait until midnight
+// for the device to notice.
+const unsigned long SCHEDULE_REFRESH_MS = 5UL * 60UL * 1000UL; // 5 minutes
+unsigned long lastScheduleFetch = 0;
+
+// ---------- Schedule (fallback defaults; overwritten by fetchSchedule()) ----------
+struct DoseTime { int hour; int minute; };
+DoseTime schedule[3] = {
+  { 8, 0 },   // Morning   8:00 AM
+  { 14, 0 },  // Afternoon 2:00 PM
+  { 20, 0 }   // Night     8:00 PM
+};
+
+// ---------- Per-slot state ----------
+bool due[3]          = { false, false, false }; // scheduled time has arrived today
+bool resolved[3]     = { false, false, false }; // pill has been picked up today
+bool missedLogged[3] = { false, false, false }; // "missed" already sent today
+unsigned long dueMillis[3] = { 0, 0, 0 };
+int  lastResetDay = -1;
+
 RTC_DS3231 rtc;
-HTTPClient http;
 
-// Scheduling & Alarm States
-String schedMorning = "08:00";
-String schedAfternoon = "14:00";
-String schedNight = "20:00";
-
-bool takenMorning = false;
-bool takenAfternoon = false;
-bool takenNight = false;
-
-bool alarmMuted = false;
-unsigned long lastPollTime = 0;
-const unsigned long pollInterval = 10000; // Poll server every 10 seconds
-
+// ---------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  
-  // Configure Pins
-  pinMode(PIN_LED_MORNING, OUTPUT);
-  pinMode(PIN_LED_AFTERNOON, OUTPUT);
-  pinMode(PIN_LED_NIGHT, OUTPUT);
-  
-  pinMode(PIN_SENSOR_MORNING, INPUT_PULLUP);
-  pinMode(PIN_SENSOR_AFTERNOON, INPUT_PULLUP);
-  pinMode(PIN_SENSOR_NIGHT, INPUT_PULLUP);
-  
-  pinMode(PIN_BUZZER, OUTPUT);
-  pinMode(PIN_MUTE_BUTTON, INPUT_PULLUP);
-  
-  digitalWrite(PIN_LED_MORNING, LOW);
-  digitalWrite(PIN_LED_AFTERNOON, LOW);
-  digitalWrite(PIN_LED_NIGHT, LOW);
-  digitalWrite(PIN_BUZZER, LOW);
+  delay(300);
 
-  // Initialize I2C and RTC
   Wire.begin();
   if (!rtc.begin()) {
-    Serial.println("Warning: Couldn't find RTC module! Falling back to ESP32 system clock.");
-  } else if (rtc.lostPower()) {
-    Serial.println("RTC lost power, setting time to compile time.");
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    Serial.println("RTC not found - check wiring.");
   }
+  // Uncomment ONCE to set the RTC to your computer's clock, upload, then
+  // re-comment this line and upload again (otherwise it resets time on every boot):
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
-  // Connect to Wi-Fi
+  for (int i = 0; i < 3; i++) {
+    pinMode(SENSOR_PIN[i], INPUT);
+    pinMode(LED_PIN[i], OUTPUT);
+    digitalWrite(LED_PIN[i], LOW);
+  }
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
   connectWiFi();
+  fetchSchedule();   // pulls Morning/Afternoon/Night times set on the website, if reachable
+  lastScheduleFetch = millis();
 }
 
+// ---------------------------------------------------------------
 void loop() {
-  // Ensure Wi-Fi remains connected
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
-  }
-
   DateTime now = rtc.now();
-  int currentHour = now.hour();
-  int currentMinute = now.minute();
-  
-  char timeBuffer[6];
-  sprintf(timeBuffer, "%02d:%02d", currentHour, currentMinute);
-  String currentTimeStr = String(timeBuffer);
+  resetIfNewDay(now);
 
-  // Periodic poll to fetch latest routine settings & taken statuses
-  if (millis() - lastPollTime >= pollInterval) {
-    fetchSchedule(currentTimeStr);
-    lastPollTime = millis();
+  if (millis() - lastScheduleFetch > SCHEDULE_REFRESH_MS) {
+    fetchSchedule();   // picks up any time the caregiver just changed on the website
+    lastScheduleFetch = millis();
   }
 
-  // Check mute button status (pressed when PIN_MUTE_BUTTON reads LOW)
-  if (digitalRead(PIN_MUTE_BUTTON) == LOW) {
-    alarmMuted = true;
-    Serial.println("Alarm manually muted.");
-    delay(200); // Debounce delay
-  }
-
-  // Handle Alarms for Morning, Afternoon, and Night Slots
-  checkAndAlert("morning", schedMorning, takenMorning, PIN_SENSOR_MORNING, PIN_LED_MORNING, currentTimeStr);
-  checkAndAlert("afternoon", schedAfternoon, takenAfternoon, PIN_SENSOR_AFTERNOON, PIN_LED_AFTERNOON, currentTimeStr);
-  checkAndAlert("night", schedNight, takenNight, PIN_SENSOR_NIGHT, PIN_LED_NIGHT, currentTimeStr);
-
-  delay(100);
+  checkSchedule(now);
+  checkSensors(now);
+  checkMissed(now);
+  updateBuzzer();
+  delay(500);
 }
 
+// ---------------------------------------------------------------
 void connectWiFi() {
-  Serial.print("Connecting to Wi-Fi: ");
-  Serial.println(WIFI_SSID);
+  Serial.print("Connecting to WiFi");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
     attempts++;
   }
-  
+  Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWi-Fi Connected successfully.");
-    Serial.print("IP Address: ");
+    Serial.print("WiFi connected, IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\nWi-Fi Connection failed. Will retry in loop.");
+    Serial.println("WiFi not connected - running on RTC + default schedule only.");
   }
 }
 
-void fetchSchedule(String currentTimeStr) {
+// ---------------------------------------------------------------
+// Pulls schedule from: GET /api/device/schedule?deviceId=MED-DEA224
+// Response: {"morning":"08:00","afternoon":"14:00","night":"20:00","active":true,"taken":{...}}
+void fetchSchedule() {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  // Construct URL with device ID and current date
-  // e.g. /api/device/schedule?deviceId=MED-123&time=08:15
-  String url = String(HOST_SERVER) + "/api/device/schedule?deviceId=" + String(DEVICE_ID);
-  
-  Serial.print("Polling Server: ");
-  Serial.println(url);
-
+  HTTPClient http;
+  String url = String(SERVER_BASE) + "/api/device/schedule?deviceId=" + DEVICE_ID;
   http.begin(url);
-  int httpCode = http.GET();
+  int code = http.GET();
 
-  if (httpCode == HTTP_CODE_OK) {
-    String payload = http.getString();
-    
+  if (code == 200) {
+    String body = http.getString();
     StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, payload);
-
-    if (!error) {
-      // Sync configurations
-      schedMorning = doc["morning"].as<String>();
-      schedAfternoon = doc["afternoon"].as<String>();
-      schedNight = doc["night"].as<String>();
-      
-      takenMorning = doc["taken"]["morning"].as<bool>();
-      takenAfternoon = doc["taken"]["afternoon"].as<bool>();
-      takenNight = doc["taken"]["night"].as<bool>();
-
-      Serial.println("Schedule synchronized successfully:");
-      Serial.printf("  Morning: %s (Taken: %d)\n", schedMorning.c_str(), takenMorning);
-      Serial.printf("  Afternoon: %s (Taken: %d)\n", schedAfternoon.c_str(), takenAfternoon);
-      Serial.printf("  Night: %s (Taken: %d)\n", schedNight.c_str(), takenNight);
+    DeserializationError err = deserializeJson(doc, body);
+    if (!err) {
+      // Parse "HH:MM" time strings into hour and minute integers
+      const char* slots[3] = { "morning", "afternoon", "night" };
+      for (int i = 0; i < 3; i++) {
+        const char* timeStr = doc[slots[i]] | nullptr;
+        if (timeStr) {
+          int h = 0, m = 0;
+          if (sscanf(timeStr, "%d:%d", &h, &m) == 2) {
+            schedule[i].hour = h;
+            schedule[i].minute = m;
+          }
+        }
+      }
+      Serial.printf("Schedule updated from server: %02d:%02d / %02d:%02d / %02d:%02d\n",
+                     schedule[0].hour, schedule[0].minute,
+                     schedule[1].hour, schedule[1].minute,
+                     schedule[2].hour, schedule[2].minute);
     } else {
-      Serial.print("JSON parsing failed: ");
-      Serial.println(error.c_str());
+      Serial.println("Schedule JSON parse failed - using existing/default times.");
     }
   } else {
-    Serial.printf("HTTP Poll failed, error: %s\n", http.errorToString(httpCode).c_str());
+    Serial.printf("Could not reach server (HTTP %d) - using existing/default schedule.\n", code);
   }
   http.end();
 }
 
-void checkAndAlert(String slot, String schedTime, bool &isTaken, int sensorPin, int ledPin, String currentTimeStr) {
-  // If the pill has already been taken, turn off alarms and do nothing
-  if (isTaken) {
-    digitalWrite(ledPin, LOW);
-    return;
-  }
-
-  // Parse hours and minutes
-  int curHours = currentTimeStr.substring(0, 2).toInt();
-  int curMins = currentTimeStr.substring(3, 5).toInt();
-  int schHours = schedTime.substring(0, 2).toInt();
-  int schMins = schedTime.substring(3, 5).toInt();
-
-  long currentTotalMinutes = curHours * 60 + curMins;
-  long scheduledTotalMinutes = schHours * 60 + schMins;
-  long activeWindowMinutes = 180; // 3 hours window
-
-  // If we are currently within the due window (scheduled time up to 3 hours later)
-  if (currentTotalMinutes >= scheduledTotalMinutes && currentTotalMinutes < (scheduledTotalMinutes + activeWindowMinutes)) {
-    
-    // Check if the pill is physically present or removed
-    // HIGH means pill is in place, LOW means pill is removed (compartment open/empty)
-    int sensorState = digitalRead(sensorPin);
-
-    if (sensorState == LOW) {
-      // Pill is taken! Turn off alarms and report to backend
-      digitalWrite(ledPin, LOW);
-      digitalWrite(PIN_BUZZER, LOW);
-      isTaken = true;
-      alarmMuted = false;
-      reportPillTaken(slot);
-    } else {
-      // Pill is still there! Trigger warnings
-      // Turn on LED indicator
-      digitalWrite(ledPin, HIGH);
-
-      // Sound buzzer if not manually muted
-      if (!alarmMuted) {
-        // Pulse the buzzer (beep beep)
-        digitalWrite(PIN_BUZZER, HIGH);
-        delay(100);
-        digitalWrite(PIN_BUZZER, LOW);
-      }
+// ---------------------------------------------------------------
+void resetIfNewDay(DateTime now) {
+  if (now.day() != lastResetDay) {
+    for (int i = 0; i < 3; i++) {
+      due[i] = false;
+      resolved[i] = false;
+      missedLogged[i] = false;
+      digitalWrite(LED_PIN[i], LOW);
     }
-  } else {
-    // Outside the active alarm window
-    digitalWrite(ledPin, LOW);
-    alarmMuted = false; // Reset mute for the next schedule slot
+    lastResetDay = now.day();
+    fetchSchedule();   // pick up any schedule change made on the website overnight
+    Serial.println("New day - all slots reset.");
   }
 }
 
-void reportPillTaken(String slot) {
-  if (WiFi.status() != WL_CONNECTED) return;
+// ---------------------------------------------------------------
+void checkSchedule(DateTime now) {
+  for (int i = 0; i < 3; i++) {
+    if (!due[i] && now.hour() == schedule[i].hour && now.minute() == schedule[i].minute) {
+      due[i] = true;
+      dueMillis[i] = millis();
+      digitalWrite(LED_PIN[i], HIGH);
+      Serial.printf("[%02d:%02d:%02d] %s slot -> BUZZER ON\n",
+                     now.hour(), now.minute(), now.second(), SLOT_NAME[i]);
+    }
+  }
+}
 
-  String url = String(HOST_SERVER) + "/api/device/status";
-  Serial.print("Reporting Pill Taken: ");
-  Serial.println(url);
+// ---------------------------------------------------------------
+void checkSensors(DateTime now) {
+  for (int i = 0; i < 3; i++) {
+    if (due[i] && !resolved[i]) {
+      int reading = digitalRead(SENSOR_PIN[i]);
+      if (reading == SENSOR_ACTIVE_STATE) {
+        resolved[i] = true;
+        digitalWrite(LED_PIN[i], LOW);
+        Serial.printf("[%02d:%02d:%02d] %s slot -> pill removed, BUZZER OFF, logged TAKEN\n",
+                       now.hour(), now.minute(), now.second(), SLOT_NAME[i]);
+        sendDoseEvent(SLOT_NAME[i], "taken", now);
+      }
+    }
+  }
+}
 
-  http.begin(url);
+// ---------------------------------------------------------------
+// Logs a "missed" event once, for dashboard visibility only - does NOT touch the buzzer.
+void checkMissed(DateTime now) {
+  for (int i = 0; i < 3; i++) {
+    if (due[i] && !resolved[i] && !missedLogged[i] &&
+        (millis() - dueMillis[i] > MISSED_THRESHOLD_MS)) {
+      missedLogged[i] = true;
+      Serial.printf("[%02d:%02d:%02d] %s slot -> still not picked up, logged MISSED (buzzer still ON)\n",
+                     now.hour(), now.minute(), now.second(), SLOT_NAME[i]);
+      sendDoseEvent(SLOT_NAME[i], "missed", now);
+    }
+  }
+}
+
+// ---------------------------------------------------------------
+// Buzzer is ON if ANY slot is due and not yet resolved - stays on until that pill is picked up.
+void updateBuzzer() {
+  bool anyUnresolved = false;
+  for (int i = 0; i < 3; i++) {
+    if (due[i] && !resolved[i]) anyUnresolved = true;
+  }
+  digitalWrite(BUZZER_PIN, anyUnresolved ? HIGH : LOW);
+}
+
+// ---------------------------------------------------------------
+// Sends dose event to: POST /api/device/status
+// Body: {"deviceId":"MED-DEA224","slot":"morning","status":"taken","date":"2026-08-31"}
+void sendDoseEvent(const char* slot, const char* status, DateTime now) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected - event logged locally only.");
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(String(SERVER_BASE) + "/api/device/status");
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
   doc["deviceId"] = DEVICE_ID;
   doc["slot"] = slot;
-  doc["status"] = "taken";
+  doc["status"] = status;
 
-  String jsonBody;
-  serializeJson(doc, jsonBody);
+  // Build date string: "YYYY-MM-DD"
+  char dateStr[11];
+  snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d",
+           now.year(), now.month(), now.day());
+  doc["date"] = dateStr;
 
-  int httpCode = http.POST(jsonBody);
+  String payload;
+  serializeJson(doc, payload);
 
-  if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED) {
-    Serial.println("Server updated: Logged pill as taken.");
+  int code = http.POST(payload);
+  if (code > 0) {
+    Serial.printf("Sent %s event for %s slot, server responded %d\n", status, slot, code);
+    String response = http.getString();
+    Serial.println(response);
   } else {
-    Serial.printf("Server update failed, error: %s\n", http.errorToString(httpCode).c_str());
+    Serial.printf("Failed to send %s event for %s slot, error: %d\n", status, slot, code);
   }
   http.end();
 }
