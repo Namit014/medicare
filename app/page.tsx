@@ -81,7 +81,10 @@ export default function Dashboard() {
     if (!isSilent) setRefreshing(true);
     try {
       const now = new Date();
-      const localDate = now.toISOString().split("T")[0];
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const localDate = `${year}-${month}-${day}`;
 
       let localTime = now.toTimeString().split(" ")[0].substring(0, 5);
       if (useSimulatedTime) {
@@ -259,7 +262,9 @@ export default function Dashboard() {
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       const hasSpecificPills = dateSpecificSlots[dateStr] && dateSpecificSlots[dateStr].length > 0;
-      const isToday = new Date().toISOString().split('T')[0] === dateStr;
+      const now = new Date();
+      const todayDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const isToday = todayDateStr === dateStr;
 
       days.push(
         <div 
@@ -385,10 +390,18 @@ export default function Dashboard() {
                   Today's Medication Schedule
                 </p>
                 <div className="space-y-4 flex-1">
-                  {slots.length === 0 ? (
-                    <div className="text-xl text-black/50 p-4">No pill times configured.</div>
-                  ) : slots.map((slot) => {
-                    const data = todayStatus[slot.id] || { scheduled: slot.time, status: "pending" };
+                  {(() => {
+                    const now = new Date();
+                    const todayDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                    const todaysOneOffs = dateSpecificSlots[todayDateStr] || [];
+                    const combinedSlots = [...slots, ...todaysOneOffs];
+                    
+                    if (combinedSlots.length === 0) {
+                      return <div className="text-xl text-black/50 p-4">No pill times configured.</div>;
+                    }
+                    
+                    return combinedSlots.map((slot) => {
+                      const data = todayStatus[slot.id] || { scheduled: slot.time, status: "pending" };
                     return (
                       <div key={slot.id} className="bg-[#bdbaba] bg-opacity-60 h-[78px] rounded-[22px] w-full flex items-center justify-between px-[15px] relative">
                          <div className="flex items-center gap-[20px]">
@@ -403,7 +416,7 @@ export default function Dashboard() {
                          </div>
                       </div>
                     )
-                  })}
+                  })})()}
                 </div>
               </div>
             </div>
@@ -423,19 +436,23 @@ export default function Dashboard() {
               
               <div className="w-[80%] mx-auto h-[1px] bg-black/10 border-b border-dashed border-black/20 absolute left-[10%] top-[140px]"></div>
 
-              <div className="w-[80%] mx-auto mt-[20px] space-y-[40px] flex-1 pb-32">
+              <div className="w-[80%] mx-auto mt-[20px] space-y-[40px] flex-1 pb-10 overflow-y-auto pr-2 custom-scrollbar">
                  {history.length === 0 ? (
                    <div className="text-xl text-black/50 text-center pt-10">No history logs yet.</div>
-                 ) : history.slice(0, 8).map((item) => (
+                 ) : history.map((item) => {
+                   const allKnownSlots = [...slots, ...Object.values(dateSpecificSlots).flat()];
+                   const slotObj = allKnownSlots.find(s => s.id === item.slot);
+                   const slotName = slotObj ? slotObj.name : `Slot ${item.slot}`;
+                   return (
                    <div key={item.id} className="flex justify-between w-full text-[24px] tracking-[-1.2px] text-black">
                      <div className="flex-1 opacity-50">{new Date(item.date).toLocaleDateString('en-GB', {day:'2-digit', month:'2-digit', year:'2-digit'}).replace(/\//g, '-')}</div>
-                     <div className="flex-[0.5] text-center opacity-50">{slots.findIndex(s => s.id === item.slot) + 1 || 1}</div>
+                     <div className="flex-[0.5] text-center opacity-50 whitespace-nowrap overflow-hidden text-ellipsis">{slotName}</div>
                      <div className="flex-1 text-center opacity-50">{item.dueAt}</div>
                      <div className="flex-1 text-right opacity-50">
                        {item.status === 'taken' ? 'Taken' : item.status === 'missed' ? 'Not taken' : 'Pending'}
                      </div>
                    </div>
-                 ))}
+                 )})}
               </div>
 
 

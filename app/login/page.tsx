@@ -124,12 +124,25 @@ export default function LoginPage() {
       </div>
 
       {/* Right Column Grid Image */}
-      <div className="hidden lg:block flex-1 relative bg-white overflow-hidden h-screen pointer-events-none z-10">
-        <img 
-          src="/singupimage.png" 
-          alt="Grid Background" 
-          className="w-full h-full object-cover" 
-        />
+      <div className="hidden lg:flex flex-1 relative bg-white h-screen sticky top-0 items-center justify-center p-6 xl:p-12 overflow-hidden">
+        <div className="grid grid-cols-4 grid-rows-4 gap-[1rem] w-full max-w-[900px] max-h-full aspect-square">
+          {Array.from({ length: 16 }).map((_, i) => {
+            const col = i % 4;
+            const row = Math.floor(i / 4);
+            return (
+              <div 
+                key={i} 
+                className="w-full h-full rounded-[24px] xl:rounded-[32px] bg-gray-100"
+                style={{
+                  backgroundImage: 'url(/singupimage.png)',
+                  backgroundSize: 'calc(400% + 3rem) calc(400% + 3rem)',
+                  backgroundPosition: `${col * 33.333333}% ${row * 33.333333}%`,
+                  backgroundRepeat: 'no-repeat'
+                }}
+              />
+            );
+          })}
+        </div>
       </div>
     </div>
   );

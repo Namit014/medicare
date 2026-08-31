@@ -164,8 +164,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Slice history list
-    const history = allLogs?.slice(0, 15).map((l) => ({
+    // Return full history list
+    const history = allLogs?.map((l) => ({
       id: l.id,
       date: l.date,
       slot: l.slot,
