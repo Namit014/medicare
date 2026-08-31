@@ -56,28 +56,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 3. Create default routine
-    const { error: routineError } = await supabaseAdmin
-      .from("routines")
-      .insert({
-        user_id: authUser.id,
-        device_id: defaultDeviceId,
-        morning: "08:00",
-        afternoon: "14:00",
-        night: "20:00",
-        active: true,
-      });
-
-    if (routineError) {
-      // Cleanup
-      await supabaseAdmin.auth.admin.deleteUser(authUser.id);
-      return NextResponse.json(
-        { error: `Routine initialization failed: ${routineError.message}` },
-        { status: 500 }
-      );
-    }
-
-    // 4. Authenticate the newly created user to generate session tokens
+    // 3. Authenticate the newly created user to generate session tokens
     const { data: sessionData, error: sessionError } = await supabase.auth.signInWithPassword({
       email,
       password,
