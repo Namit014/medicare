@@ -17,27 +17,9 @@ export async function GET(request: NextRequest) {
       .eq("user_id", user.id)
       .maybeSingle();
 
-    // Fallback: If no routine is found, create one with defaults
+    // Return null if no routine is found so the frontend knows to redirect to onboarding
     if (error || !routine) {
-      const defaultDeviceId = user.deviceId || `MED-${user.id.substring(0, 6).toUpperCase()}`;
-      
-      const { data: newRoutine, error: insertError } = await supabaseAdmin
-        .from("routines")
-        .insert({
-          user_id: user.id,
-          device_id: defaultDeviceId,
-          morning: "08:00",
-          afternoon: "14:00",
-          night: "20:00",
-          active: true,
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        throw new Error(insertError.message);
-      }
-      routine = newRoutine;
+      return NextResponse.json({ success: true, routine: null });
     }
 
     return NextResponse.json({ success: true, routine });
@@ -55,10 +37,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { morning, afternoon, night, active, deviceId } = await request.json();
+    const { slots, dateSpecificSlots, active, deviceId } = await request.json();
 
-    if (!morning || !afternoon || !night) {
-      return NextResponse.json({ error: "All slot times are required" }, { status: 400 });
+    if (slots !== undefined && !Array.isArray(slots)) {
+      return NextResponse.json({ error: "Valid slots array is required" }, { status: 400 });
     }
 
     // 1. Check if the device ID is already registered by another account
@@ -90,18 +72,19 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 3. Upsert routine timings
+    // 3. Upsert routine timings using the JSONB column
+    const updateData: any = {
+      user_id: user.id,
+      device_id: deviceId || user.deviceId,
+      active: active !== undefined ? active : true,
+      updated_at: new Date().toISOString(),
+    };
+    if (slots !== undefined) updateData.slots = slots;
+    if (dateSpecificSlots !== undefined) updateData.date_specific_slots = dateSpecificSlots;
+
     const { data: updatedRoutine, error: routineError } = await supabaseAdmin
       .from("routines")
-      .upsert({
-        user_id: user.id,
-        device_id: deviceId || user.deviceId,
-        morning,
-        afternoon,
-        night,
-        active: active !== undefined ? active : true,
-        updated_at: new Date().toISOString(),
-      })
+      .upsert(updateData, { onConflict: 'user_id' })
       .select()
       .single();
 

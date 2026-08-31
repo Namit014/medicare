@@ -33,9 +33,11 @@ export async function GET(request: NextRequest) {
         .insert({
           user_id: user.id,
           device_id: defaultDeviceId,
-          morning: "08:00",
-          afternoon: "14:00",
-          night: "20:00",
+          slots: [
+            { id: "1", name: "Dose 1", time: "08:00" },
+            { id: "2", name: "Dose 2", time: "14:00" },
+            { id: "3", name: "Dose 3", time: "20:00" }
+          ],
           active: true,
         })
         .select()
@@ -43,7 +45,12 @@ export async function GET(request: NextRequest) {
       routine = newRoutine;
     }
 
-    const slots = ["morning", "afternoon", "night"] as const;
+    const recurringSlots = routine.slots || [];
+    const dateSpecificSlots = routine.date_specific_slots || {};
+    const oneOffSlots = dateSpecificSlots[localDate] || [];
+    
+    // Merge them and deduplicate IDs if necessary, or just concat
+    const slots = [...recurringSlots, ...oneOffSlots];
     const currentMinutes = parseTimeToMinutes(localTime);
     const activeWindowMinutes = 180; // 3 hours window to take pill
 
@@ -56,8 +63,9 @@ export async function GET(request: NextRequest) {
 
     const todayStatus: Record<string, any> = {};
 
-    for (const slot of slots) {
-      const scheduledTimeStr = routine[slot];
+    for (const slotObj of slots) {
+      const slot = slotObj.id;
+      const scheduledTimeStr = slotObj.time;
       const scheduledMinutes = parseTimeToMinutes(scheduledTimeStr);
       const log = todayLogs?.find((l) => l.slot === slot);
 
