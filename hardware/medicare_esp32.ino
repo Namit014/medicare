@@ -17,7 +17,7 @@
   IR Sensor Afternoon  OUT -> GPIO5    VCC -> 5V(VIN)   GND -> GND
   IR Sensor Night      OUT -> GPIO18   VCC -> 5V(VIN)   GND -> GND
   LED Morning    Anode -> GPIO19 (through 220ohm resistor)   Cathode -> GND
-  LED Afternoon  Anode -> GPIO23 (through 220ohm resistor)   Cathode -> GND
+  LED Afternoon  Anode -> GPIO23 (through  220ohm resistor)   Cathode -> GND
   LED Night      Anode -> GPIO25 (through 220ohm resistor)   Cathode -> GND
   Buzzer  Signal -> GPIO26   GND -> GND
 
