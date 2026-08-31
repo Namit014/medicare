@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Pill } from "lucide-react";
 
 export default function SignupPage() {
@@ -136,6 +137,13 @@ export default function SignupPage() {
               </button>
             </div>
           </form>
+
+          <p className="mt-8 text-center text-[15px] text-[#595959]">
+            Already have an account?{" "}
+            <Link href="/login" className="font-medium text-black hover:underline">
+              Log in
+            </Link>
+          </p>
         </div>
       </div>
 

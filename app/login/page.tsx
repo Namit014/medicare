@@ -120,6 +120,13 @@ export default function LoginPage() {
               </button>
             </div>
           </form>
+
+          <p className="mt-8 text-center text-[15px] text-[#595959]">
+            New to Medicare?{" "}
+            <Link href="/signup" className="font-medium text-black hover:underline">
+              Create an account
+            </Link>
+          </p>
         </div>
       </div>
 

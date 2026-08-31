@@ -183,7 +183,11 @@ export default function Dashboard() {
       const res = await fetch("/api/device/status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slotId, status: isRemoval ? "removed" : "inserted" })
+        body: JSON.stringify({ 
+          deviceId: deviceIdInput,
+          slotId: slotId, 
+          status: isRemoval ? "taken" : "pending" 
+        })
       });
       if (res.ok) {
         setPillsPresent(prev => ({ ...prev, [slotId]: !isRemoval }));

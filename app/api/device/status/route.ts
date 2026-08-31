@@ -3,18 +3,14 @@ import { supabaseAdmin } from "@/lib/supabase";
 
 export async function POST(request: NextRequest) {
   try {
-    const { deviceId, slot, status, date } = await request.json();
+    const { deviceId, slotId, status, date } = await request.json();
     const localDate = date || new Date().toISOString().split("T")[0];
 
-    if (!deviceId || !slot || !status) {
+    if (!deviceId || !slotId || !status) {
       return NextResponse.json(
-        { error: "deviceId, slot, and status are required" },
+        { error: "deviceId, slotId, and status are required" },
         { status: 400 }
       );
-    }
-
-    if (!["morning", "afternoon", "night"].includes(slot)) {
-      return NextResponse.json({ error: "Invalid slot name" }, { status: 400 });
     }
 
     // 1. Find the routine config to identify the owner
@@ -28,6 +24,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Device ID not registered" }, { status: 404 });
     }
 
+    // Find the slot time
+    let due_at = "00:00";
+    const slotsArr = routine.slots || [];
+    const dateSlotsArr = routine.date_specific_slots?.[localDate] || [];
+    const allSlots = [...slotsArr, ...dateSlotsArr];
+    const slotObj = allSlots.find((s: any) => s.id === slotId);
+    if (slotObj) {
+      due_at = slotObj.time;
+    }
+
     if (status === "taken") {
       // 2. Upsert log as taken (re-write or insert if empty)
       const { data: log, error: upsertError } = await supabaseAdmin
@@ -36,9 +42,9 @@ export async function POST(request: NextRequest) {
           user_id: routine.user_id,
           device_id: deviceId,
           date: localDate,
-          slot,
+          slot: slotId,
           status: "taken",
-          due_at: routine[slot],
+          due_at: due_at,
           taken_at: new Date().toISOString(),
         }, { onConflict: "user_id,date,slot" })
         .select()
@@ -50,7 +56,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        message: `Successfully logged ${slot} pill as taken`,
+        message: `Successfully logged ${slotId} pill as taken`,
         log,
       });
     } else if (status === "pending" || status === "reset") {
@@ -60,7 +66,7 @@ export async function POST(request: NextRequest) {
         .delete()
         .eq("user_id", routine.user_id)
         .eq("date", localDate)
-        .eq("slot", slot);
+        .eq("slot", slotId);
 
       if (deleteError) {
         throw new Error(`Failed to reset log: ${deleteError.message}`);
