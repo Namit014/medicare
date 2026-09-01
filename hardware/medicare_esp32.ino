@@ -51,12 +51,17 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <WiFiManager.h>
+#include <Preferences.h>
 
-// ---------- Wi-Fi + backend config ----------
-const char* WIFI_SSID     = "chotelog";
-const char* WIFI_PASSWORD = "omsaibaba";
-const char* SERVER_BASE   = "http://192.168.1.103:3000";
-const char* DEVICE_ID     = "MED-DEA224";
+Preferences preferences;
+String server_base = "";
+String device_id = "";
+bool shouldSaveConfig = false;
+
+void saveConfigCallback() {
+  shouldSaveConfig = true;
+}
 
 // ---------- NTP config ----------
 const char* NTP_SERVER    = "pool.ntp.org";
@@ -116,7 +121,37 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 
-  connectWiFi();
+  preferences.begin("medicare", false);
+  server_base = preferences.getString("server", "http://192.168.1.103:3000");
+  device_id = preferences.getString("deviceid", "");
+
+  WiFiManager wm;
+  wm.setSaveConfigCallback(saveConfigCallback);
+  
+  WiFiManagerParameter custom_server("server", "Server URL", server_base.c_str(), 60);
+  WiFiManagerParameter custom_deviceid("deviceid", "Hardware Link ID", device_id.c_str(), 20);
+  
+  wm.addParameter(&custom_server);
+  wm.addParameter(&custom_deviceid);
+
+  Serial.println("Starting WiFiManager...");
+  if (!wm.autoConnect("MediCare-Setup")) {
+    Serial.println("Failed to connect to WiFi. Restarting...");
+    delay(3000);
+    ESP.restart();
+  }
+
+  if (shouldSaveConfig) {
+    server_base = custom_server.getValue();
+    device_id = custom_deviceid.getValue();
+    preferences.putString("server", server_base);
+    preferences.putString("deviceid", device_id);
+    Serial.println("Saved new config to flash memory!");
+  }
+  preferences.end();
+  Serial.print("Connected! IP: ");
+  Serial.println(WiFi.localIP());
+
   configTime(GMT_OFFSET_SEC, DST_OFFSET_SEC, NTP_SERVER);
   timeReady = getLocalTime(&timeinfo);
   if (!timeReady) {
@@ -149,32 +184,17 @@ void loop() {
 }
 
 // ---------------------------------------------------------------
-void connectWiFi() {
-  Serial.print("Connecting to WiFi");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("WiFi connected, IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("WiFi not connected - running on NTP + default schedule only.");
-  }
-}
-
-// ---------------------------------------------------------------
-// Pulls schedule from: GET /api/device/schedule?deviceId=MED-DEA224
+// Pulls schedule from API
 // Response: {"success":true,"active":true,"slots":[{"id":"123","time":"08:00"}],"taken":{...}}
 void fetchSchedule() {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (device_id == "") {
+    Serial.println("No Device ID configured. Please reset and connect to setup portal.");
+    return;
+  }
 
   HTTPClient http;
-  String url = String(SERVER_BASE) + "/api/device/schedule?deviceId=" + DEVICE_ID;
+  String url = server_base + "/api/device/schedule?deviceId=" + device_id;
   http.begin(url);
   int code = http.GET();
 
@@ -301,11 +321,11 @@ void sendDoseEvent(const char* slotId, const char* status, struct tm &t) {
   }
 
   HTTPClient http;
-  http.begin(String(SERVER_BASE) + "/api/device/status");
+  http.begin(server_base + "/api/device/status");
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
-  doc["deviceId"] = DEVICE_ID;
+  doc["deviceId"] = device_id;
   doc["slotId"] = slotId; // Updated to match API expectation
   doc["status"] = status;
 
@@ -320,11 +340,11 @@ void sendDoseEvent(const char* slotId, const char* status, struct tm &t) {
 
   int code = http.POST(payload);
   if (code > 0) {
-    Serial.printf("Sent %s event for %s slot, server responded %d\n", status, slot, code);
+    Serial.printf("Sent %s event for %s slot, server responded %d\n", status, slotId, code);
     String response = http.getString();
     Serial.println(response);
   } else {
-    Serial.printf("Failed to send %s event for %s slot, error: %d\n", status, slot, code);
+    Serial.printf("Failed to send %s event for %s slot, error: %d\n", status, slotId, code);
   }
   http.end();
 }
