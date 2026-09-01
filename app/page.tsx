@@ -265,7 +265,11 @@ export default function Dashboard() {
     
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const hasSpecificPills = dateSpecificSlots[dateStr] && dateSpecificSlots[dateStr].length > 0;
+      const customPills = [
+        ...(dateSpecificSlots[dateStr] || []),
+        ...slots.filter((s: any) => s.date === dateStr)
+      ];
+      const hasSpecificPills = customPills.length > 0;
       const now = new Date();
       const todayDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
       const isToday = todayDateStr === dateStr;
@@ -274,14 +278,23 @@ export default function Dashboard() {
         <div 
           key={d} 
           onClick={() => handleDateClick(dateStr)}
-          className={`aspect-square rounded-[16px] sm:rounded-[24px] flex flex-col items-center justify-center cursor-pointer transition-all border
-            ${isToday ? 'bg-black text-white border-black shadow-md' : 'bg-white text-black border-transparent hover:border-black/20 shadow-sm'}
+          className={`min-h-[80px] sm:min-h-[120px] rounded-[16px] sm:rounded-[20px] p-2 sm:p-4 flex flex-col justify-between cursor-pointer transition-all border group
+            ${isToday ? 'bg-black text-white shadow-md' : 'bg-white text-black hover:bg-gray-50 border-transparent hover:border-black/10 shadow-sm'}
           `}
         >
-          <span className="text-[18px] sm:text-[24px] font-medium">{d}</span>
-          {hasSpecificPills && (
-            <div className="w-[6px] h-[6px] sm:w-[8px] sm:h-[8px] bg-[#B0D5FF] rounded-full mt-1"></div>
-          )}
+          <div className="flex justify-end w-full">
+            <span className={`text-[16px] sm:text-[20px] font-semibold w-8 h-8 flex items-center justify-center rounded-full ${isToday ? 'bg-white/20' : 'group-hover:bg-gray-200'}`}>
+              {d}
+            </span>
+          </div>
+          
+          <div className="flex flex-col gap-1 w-full mt-2">
+            {hasSpecificPills && (
+              <div className="w-full bg-[#B0D5FF] text-[#003b80] text-[10px] sm:text-[12px] font-semibold px-2 py-1 rounded-md truncate text-center">
+                {customPills.length} Custom {customPills.length === 1 ? 'Pill' : 'Pills'}
+              </div>
+            )}
+          </div>
         </div>
       );
     }
@@ -398,7 +411,9 @@ export default function Dashboard() {
                     const now = new Date();
                     const todayDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
                     const todaysOneOffs = dateSpecificSlots[todayDateStr] || [];
-                    const combinedSlots = [...slots, ...todaysOneOffs];
+                    const dailySlots = slots.filter((s: any) => !s.date);
+                    const specificSlotsForToday = slots.filter((s: any) => s.date === todayDateStr);
+                    const combinedSlots = [...dailySlots, ...specificSlotsForToday, ...todaysOneOffs];
                     
                     if (combinedSlots.length === 0) {
                       return <div className="text-xl text-black/50 p-4">No pill times configured.</div>;
@@ -466,16 +481,16 @@ export default function Dashboard() {
 
         {/* ----------------- CALENDAR VIEW ----------------- */}
         {activeTab === 'calendar' && (
-          <div className="w-full max-w-4xl mx-auto pt-6 pb-12 flex-1">
-            <div className="bg-[#e7e7e7] p-6 sm:p-10 rounded-[31px] shadow-sm relative">
-              <div className="flex items-center justify-between mb-10">
+          <div className="w-full max-w-[1200px] mx-auto pt-[90px] px-4 pb-12 flex-1 flex flex-col">
+            <div className="bg-[#f4f4f4] p-6 sm:p-10 rounded-[31px] shadow-sm flex-1 flex flex-col border border-black/5">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4">
                 <h2 className="text-[32px] sm:text-[43px] tracking-[-1.5px] sm:tracking-[-2.15px] text-black m-0 leading-none">
                   Calendar
                 </h2>
-                <div className="flex items-center gap-2 sm:gap-4">
-                  <button onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1))} className="px-3 py-1 sm:px-4 sm:py-2 bg-[#d2d2d2] rounded-xl hover:bg-[#c2c2c2] transition text-[14px] sm:text-[16px]">Prev</button>
-                  <span className="text-[16px] sm:text-[20px] font-medium">{currentMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
-                  <button onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1))} className="px-3 py-1 sm:px-4 sm:py-2 bg-[#d2d2d2] rounded-xl hover:bg-[#c2c2c2] transition text-[14px] sm:text-[16px]">Next</button>
+                <div className="flex items-center gap-2 sm:gap-4 bg-white p-2 rounded-2xl shadow-sm border border-black/5">
+                  <button onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1))} className="px-3 py-1.5 sm:px-4 sm:py-2 bg-[#f4f4f4] rounded-xl hover:bg-[#e0e0e0] transition text-[14px] sm:text-[15px] font-medium">Prev</button>
+                  <span className="text-[15px] sm:text-[18px] font-semibold min-w-[140px] text-center">{currentMonth.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
+                  <button onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1))} className="px-3 py-1.5 sm:px-4 sm:py-2 bg-[#f4f4f4] rounded-xl hover:bg-[#e0e0e0] transition text-[14px] sm:text-[15px] font-medium">Next</button>
                 </div>
               </div>
               
@@ -559,61 +574,68 @@ export default function Dashboard() {
 
         {/* ----------------- SETTINGS VIEW ----------------- */}
         {activeTab === 'settings' && (
-          <div className="w-full max-w-4xl mx-auto pt-6 pb-12 flex-1">
-             <div className="bg-[#e7e7e7] p-6 sm:p-10 rounded-[31px] shadow-sm">
-                <div className="flex items-center justify-between mb-10">
-                  <h2 className="text-[32px] sm:text-[43px] tracking-[-1.5px] sm:tracking-[-2.15px] text-black m-0 leading-none">
-                    Manage Routine
+          <div className="w-full max-w-2xl mx-auto pt-6 pb-12 flex-1">
+             <div className="bg-[#f4f4f4] p-6 sm:p-10 rounded-[31px] shadow-sm border border-black/5">
+                <div className="flex items-center justify-between mb-8">
+                  <h2 className="text-[32px] sm:text-[40px] tracking-tight text-black m-0 leading-none font-semibold">
+                    Reminders
                   </h2>
                   <div className="flex items-center gap-3">
-                    <span className="text-xl text-[#595959]">Active</span>
+                    <span className="text-lg font-medium text-[#595959]">{routineActive ? "Active" : "Paused"}</span>
                     <button
                       type="button"
                       onClick={() => setRoutineActive(!routineActive)}
-                      className={`w-14 h-8 rounded-full transition-colors relative ${routineActive ? 'bg-black' : 'bg-gray-400'}`}
+                      className={`w-14 h-8 rounded-full transition-colors relative shadow-inner ${routineActive ? 'bg-green-500' : 'bg-gray-400'}`}
                     >
-                      <div className={`absolute top-1 w-6 h-6 rounded-full bg-white transition-transform ${routineActive ? 'left-7' : 'left-1'}`} />
+                      <div className={`absolute top-1 w-6 h-6 rounded-full bg-white transition-transform shadow-sm ${routineActive ? 'left-7' : 'left-1'}`} />
                     </button>
                   </div>
                 </div>
 
-                <form onSubmit={handleSaveRoutine} className="space-y-8">
-                  {/* Device Configuration */}
-                  <div className="bg-[#d2d2d2] p-6 rounded-[22px]">
-                    <label className="block text-[22px] tracking-[-1px] text-[#3c3c3c] mb-3 font-medium">Device Link ID</label>
-                    <input
-                      type="text"
-                      value={deviceIdInput}
-                      onChange={(e) => setDeviceIdInput(e.target.value)}
-                      placeholder="Enter device serial number..."
-                      className="w-full bg-white border border-[#bdbaba] rounded-[16px] px-5 py-4 text-[20px] text-black focus:outline-none focus:border-black"
-                    />
-                  </div>
-
-                  {/* Pills / Slots Manager */}
+                <form onSubmit={handleSaveRoutine} className="space-y-6">
+                  {/* Reminders List */}
                   <div className="space-y-4">
-                    <div className="flex items-center justify-between px-2">
-                      <p className="text-[26px] tracking-[-1px] text-[#3c3c3c] m-0 font-medium">Daily Schedule</p>
-                    </div>
-
-                    {slots.map((slot, index) => {
-                      const isPillIn = pillsPresent[slot.id];
-                      return (
-                        <div key={slot.id} className="bg-white p-6 rounded-[22px] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-6 border border-[#bdbaba]/30">
-                          {/* Left: Time input */}
-                          <div className="flex-1 w-full">
-                            <div className="flex items-center justify-between mb-2">
-                              <label className="block text-[20px] font-medium text-black">
-                                {slot.name}
-                              </label>
-                              <button 
-                                type="button" 
-                                onClick={() => setSlots(slots.filter(s => s.id !== slot.id))}
-                                className="text-red-500 font-medium text-[16px] hover:underline"
-                              >
-                                Remove
-                              </button>
-                            </div>
+                    {slots.map((slot, index) => (
+                      <div key={slot.id} className="bg-white p-4 rounded-[20px] shadow-sm flex flex-col gap-4 border border-black/5 hover:border-black/10 transition-colors">
+                        <div className="flex items-center gap-4 w-full">
+                          <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-500 flex items-center justify-center font-bold">
+                            {index + 1}
+                          </div>
+                          <div className="flex-1">
+                            <input
+                              type="text"
+                              value={slot.name}
+                              onChange={(e) => {
+                                const newSlots = [...slots];
+                                newSlots[index].name = e.target.value;
+                                setSlots(newSlots);
+                              }}
+                              className="text-[18px] font-semibold text-black bg-transparent border-none focus:outline-none w-full"
+                              placeholder="e.g. Morning Pill"
+                            />
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-wrap items-center justify-between gap-3 bg-[#f9f9f9] p-3 rounded-2xl border border-gray-100">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider w-10">Date</span>
+                            <input
+                              type="date"
+                              value={slot.date || ""}
+                              onChange={(e) => {
+                                const newSlots = [...slots];
+                                newSlots[index].date = e.target.value;
+                                setSlots(newSlots);
+                              }}
+                              className="bg-white border border-gray-200 rounded-xl px-3 py-2 text-[15px] font-medium text-black focus:outline-none focus:ring-2 focus:ring-black/5 cursor-pointer"
+                            />
+                            {slot.date && (
+                                <button type="button" onClick={() => { const ns=[...slots]; delete ns[index].date; setSlots(ns); }} className="text-xs text-red-400 hover:text-red-600">Clear Date</button>
+                            )}
+                          </div>
+                          
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Time</span>
                             <input
                               type="time"
                               value={slot.time}
@@ -622,56 +644,77 @@ export default function Dashboard() {
                                 newSlots[index].time = e.target.value;
                                 setSlots(newSlots);
                               }}
-                              className="bg-[#f2f2f2] border border-[#d2d2d2] rounded-[12px] px-4 py-3 text-[22px] text-black focus:outline-none w-full max-w-[200px]"
+                              className="bg-white border border-gray-200 rounded-xl px-3 py-2 text-[15px] font-medium text-black focus:outline-none focus:ring-2 focus:ring-black/5 cursor-pointer"
                             />
-                          </div>
-
-                          {/* Right: Hardware simulation */}
-                          <div className="flex flex-col sm:items-end w-full sm:w-auto bg-[#f8f8f8] p-4 rounded-[16px]">
-                             <span className="text-[14px] uppercase font-bold tracking-wider text-[#595959] mb-2">Compartment Status</span>
-                             <div className="flex items-center gap-4">
-                               <div className={`text-[16px] font-medium px-3 py-1 rounded-[8px] ${isPillIn ? 'bg-black text-white' : 'bg-[#e7e7e7] text-black/50'}`}>
-                                 {isPillIn ? "💊 Pill Inside" : "📭 Empty"}
-                               </div>
-                               {isPillIn ? (
-                                 <button
-                                   type="button"
-                                   onClick={() => simulatePillRemoval(slot.id, true)}
-                                   className="px-4 py-2 bg-red-100 text-red-600 border border-red-200 hover:bg-red-200 font-semibold rounded-[10px] transition-all"
-                                 >
-                                   Take Pill (Sim)
-                                 </button>
-                               ) : (
-                                 <button
-                                   type="button"
-                                   onClick={() => simulatePillRemoval(slot.id, false)}
-                                   className="px-4 py-2 bg-white text-black border border-black hover:bg-gray-100 font-semibold rounded-[10px] transition-all"
-                                 >
-                                   Add Pill (Sim)
-                                 </button>
-                               )}
-                             </div>
+                            <button 
+                              type="button" 
+                              onClick={() => setSlots(slots.filter(s => s.id !== slot.id))}
+                              className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors ml-2"
+                            >
+                              ✕
+                            </button>
                           </div>
                         </div>
-                      )
-                    })}
+                      </div>
+                    ))}
 
                     <button 
                       type="button"
                       onClick={() => setSlots([...slots, { id: Date.now().toString(), name: `Dose ${slots.length + 1}`, time: "12:00", medicines: [] }])}
-                      className="w-full h-16 rounded-[22px] border-2 border-dashed border-[#bdbaba] text-[20px] text-[#595959] font-medium flex items-center justify-center hover:bg-[#d2d2d2]/30 transition-all mt-4"
+                      className="w-full h-[60px] rounded-[20px] border-2 border-dashed border-gray-300 text-gray-500 font-semibold flex items-center justify-center hover:bg-gray-50 hover:border-gray-400 hover:text-gray-700 transition-all"
                     >
-                      + Add New Pill Time
+                      + Add New Reminder
                     </button>
                   </div>
 
+                  {/* Advanced / Hardware Settings */}
+                  <div className="pt-6 border-t border-gray-200 mt-8">
+                    <details className="group">
+                      <summary className="cursor-pointer text-sm font-medium text-gray-500 hover:text-gray-800 list-none flex items-center gap-2 select-none">
+                        <span className="transition group-open:rotate-90">▶</span> Advanced Device Settings
+                      </summary>
+                      <div className="pt-4 space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-600 mb-1.5">Hardware Link ID</label>
+                          <input
+                            type="text"
+                            value={deviceIdInput}
+                            onChange={(e) => setDeviceIdInput(e.target.value)}
+                            placeholder="Enter ESP32 device serial number..."
+                            className="w-full bg-white border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-black"
+                          />
+                        </div>
+                        
+                        <div className="bg-orange-50 border border-orange-100 rounded-xl p-4">
+                          <h4 className="text-sm font-semibold text-orange-800 mb-2">Hardware Simulation Tools</h4>
+                          <p className="text-xs text-orange-600 mb-3">Manually trigger device sensors for testing adherence logs without physical hardware.</p>
+                          <div className="flex flex-wrap gap-2">
+                            {slots.map(slot => {
+                              const isPillIn = pillsPresent[slot.id];
+                              return (
+                                <button
+                                  key={slot.id}
+                                  type="button"
+                                  onClick={() => simulatePillRemoval(slot.id, isPillIn)}
+                                  className={`text-xs px-3 py-1.5 rounded-lg font-medium border ${isPillIn ? 'bg-black text-white border-black' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                                >
+                                  {slot.name}: {isPillIn ? 'Take Pill' : 'Refill'}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+
                   {/* Submit */}
-                  <div className="pt-6">
+                  <div className="pt-4">
                     <button 
-                      type="submit"
-                      className="w-full sm:w-auto px-10 py-4 bg-black text-white text-[22px] tracking-[-1px] rounded-[16px] font-medium hover:bg-gray-800 transition-all shadow-sm"
+                      type="submit" 
+                      className="w-full bg-black text-white py-4 rounded-[20px] text-[18px] font-semibold hover:bg-gray-800 transition shadow-md hover:shadow-lg transform active:scale-[0.99]"
                     >
-                      Save Changes
+                      Save Reminders
                     </button>
                   </div>
                 </form>

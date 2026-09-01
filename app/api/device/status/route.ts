@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        message: `Successfully reset ${slot} pill state`,
+        message: `Successfully reset ${slotId} pill state`,
       });
     } else {
       return NextResponse.json({ error: "Invalid status value" }, { status: 400 });
