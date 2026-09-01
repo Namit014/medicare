@@ -97,6 +97,8 @@ bool due[3]          = { false, false, false }; // scheduled time has arrived to
 bool resolved[3]     = { false, false, false }; // pill has been picked up today
 bool missedLogged[3] = { false, false, false }; // "missed" already sent today
 unsigned long dueMillis[3] = { 0, 0, 0 };
+String slot_id[3]    = { "", "", "" }; // Dynamic slot IDs from server
+
 int  lastResetDay = -1;
 bool timeReady = false;
 struct tm timeinfo;
@@ -167,7 +169,7 @@ void connectWiFi() {
 
 // ---------------------------------------------------------------
 // Pulls schedule from: GET /api/device/schedule?deviceId=MED-DEA224
-// Response: {"morning":"08:00","afternoon":"14:00","night":"20:00","active":true,"taken":{...}}
+// Response: {"success":true,"active":true,"slots":[{"id":"123","time":"08:00"}],"taken":{...}}
 void fetchSchedule() {
   if (WiFi.status() != WL_CONNECTED) return;
 
@@ -178,21 +180,33 @@ void fetchSchedule() {
 
   if (code == 200) {
     String body = http.getString();
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<1024> doc; // Increased size for array
     DeserializationError err = deserializeJson(doc, body);
     if (!err) {
-      // Parse "HH:MM" time strings into hour and minute integers
-      const char* slots[3] = { "morning", "afternoon", "night" };
-      for (int i = 0; i < 3; i++) {
-        const char* timeStr = doc[slots[i]] | nullptr;
-        if (timeStr) {
+      JsonArray slotsArr = doc["slots"].as<JsonArray>();
+      int idx = 0;
+      for (JsonObject s : slotsArr) {
+        if (idx >= 3) break; // Hardware limit of 3 physical slots
+        const char* timeStr = s["time"];
+        const char* idStr = s["id"];
+        if (timeStr && idStr) {
           int h = 0, m = 0;
           if (sscanf(timeStr, "%d:%d", &h, &m) == 2) {
-            schedule[i].hour = h;
-            schedule[i].minute = m;
+            schedule[idx].hour = h;
+            schedule[idx].minute = m;
+            slot_id[idx] = String(idStr);
+            idx++;
           }
         }
       }
+      
+      // If fewer than 3 pills are scheduled today, disable the remaining hardware slots
+      for (int i = idx; i < 3; i++) {
+         slot_id[i] = "";
+         schedule[i].hour = 99; // Never triggered
+         schedule[i].minute = 99;
+      }
+      
       Serial.printf("Schedule updated from server: %02d:%02d / %02d:%02d / %02d:%02d\n",
                      schedule[0].hour, schedule[0].minute,
                      schedule[1].hour, schedule[1].minute,
@@ -224,12 +238,13 @@ void resetIfNewDay(struct tm &t) {
 // ---------------------------------------------------------------
 void checkSchedule(struct tm &t) {
   for (int i = 0; i < 3; i++) {
+    if (slot_id[i] == "") continue; // Skip unused slots
     if (!due[i] && t.tm_hour == schedule[i].hour && t.tm_min == schedule[i].minute) {
       due[i] = true;
       dueMillis[i] = millis();
       digitalWrite(LED_PIN[i], HIGH);
-      Serial.printf("[%02d:%02d:%02d] %s slot -> BUZZER ON\n",
-                     t.tm_hour, t.tm_min, t.tm_sec, SLOT_NAME[i]);
+      Serial.printf("[%02d:%02d:%02d] Slot %d -> BUZZER ON\n",
+                     t.tm_hour, t.tm_min, t.tm_sec, i);
     }
   }
 }
@@ -237,14 +252,15 @@ void checkSchedule(struct tm &t) {
 // ---------------------------------------------------------------
 void checkSensors(struct tm &t) {
   for (int i = 0; i < 3; i++) {
+    if (slot_id[i] == "") continue;
     if (due[i] && !resolved[i]) {
       int reading = digitalRead(SENSOR_PIN[i]);
       if (reading == SENSOR_ACTIVE_STATE) {
         resolved[i] = true;
         digitalWrite(LED_PIN[i], LOW);
-        Serial.printf("[%02d:%02d:%02d] %s slot -> pill removed, BUZZER OFF, logged TAKEN\n",
-                       t.tm_hour, t.tm_min, t.tm_sec, SLOT_NAME[i]);
-        sendDoseEvent(SLOT_NAME[i], "taken", t);
+        Serial.printf("[%02d:%02d:%02d] Slot %d -> pill removed, BUZZER OFF, logged TAKEN\n",
+                       t.tm_hour, t.tm_min, t.tm_sec, i);
+        sendDoseEvent(slot_id[i].c_str(), "taken", t);
       }
     }
   }
@@ -254,12 +270,13 @@ void checkSensors(struct tm &t) {
 // Logs a "missed" event once, for dashboard visibility only - does NOT touch the buzzer.
 void checkMissed(struct tm &t) {
   for (int i = 0; i < 3; i++) {
+    if (slot_id[i] == "") continue;
     if (due[i] && !resolved[i] && !missedLogged[i] &&
         (millis() - dueMillis[i] > MISSED_THRESHOLD_MS)) {
       missedLogged[i] = true;
-      Serial.printf("[%02d:%02d:%02d] %s slot -> still not picked up, logged MISSED (buzzer still ON)\n",
-                     t.tm_hour, t.tm_min, t.tm_sec, SLOT_NAME[i]);
-      sendDoseEvent(SLOT_NAME[i], "missed", t);
+      Serial.printf("[%02d:%02d:%02d] Slot %d -> still not picked up, logged MISSED (buzzer still ON)\n",
+                     t.tm_hour, t.tm_min, t.tm_sec, i);
+      sendDoseEvent(slot_id[i].c_str(), "missed", t);
     }
   }
 }
@@ -276,8 +293,8 @@ void updateBuzzer() {
 
 // ---------------------------------------------------------------
 // Sends dose event to: POST /api/device/status
-// Body: {"deviceId":"MED-DEA224","slot":"morning","status":"taken","date":"2026-08-31"}
-void sendDoseEvent(const char* slot, const char* status, struct tm &t) {
+// Body: {"deviceId":"MED-DEA224","slotId":"123","status":"taken","date":"2026-08-31"}
+void sendDoseEvent(const char* slotId, const char* status, struct tm &t) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected - event logged locally only.");
     return;
@@ -289,7 +306,7 @@ void sendDoseEvent(const char* slot, const char* status, struct tm &t) {
 
   StaticJsonDocument<256> doc;
   doc["deviceId"] = DEVICE_ID;
-  doc["slot"] = slot;
+  doc["slotId"] = slotId; // Updated to match API expectation
   doc["status"] = status;
 
   // Build date string: "YYYY-MM-DD"

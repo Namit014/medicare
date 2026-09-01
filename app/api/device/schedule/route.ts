@@ -29,20 +29,48 @@ export async function GET(request: NextRequest) {
       .eq("device_id", deviceId)
       .eq("date", localDate);
 
-    // Determine completion status
-    const taken = {
-      morning: logs?.some((l) => l.slot === "morning" && l.status === "taken") || false,
-      afternoon: logs?.some((l) => l.slot === "afternoon" && l.status === "taken") || false,
-      night: logs?.some((l) => l.slot === "night" && l.status === "taken") || false,
-    };
+    // Determine active slots for the requested localDate
+    const now = new Date(localDate);
+    const dayOfWeek = now.getDay();
+    
+    const slotsArr = routine.slots || [];
+    const dateSlotsArr = routine.date_specific_slots?.[localDate] || [];
+    
+    // Filter recurring slots for today
+    const activeRecurringSlots = slotsArr.filter((s: any) => {
+      if (s.date && s.date !== localDate) return false;
+      if (s.date === localDate) return true;
+      if (s.daysOfWeek && s.daysOfWeek.length > 0) return s.daysOfWeek.includes(dayOfWeek);
+      if (s.date) return false; // has date but didn't match
+      return true; // daily if missing daysOfWeek
+    });
+    
+    // Combine and sort chronologically
+    const combinedSlots = [...activeRecurringSlots, ...dateSlotsArr];
+    combinedSlots.sort((a: any, b: any) => {
+      const timeA = a.time || "00:00";
+      const timeB = b.time || "00:00";
+      return timeA.localeCompare(timeB);
+    });
+    
+    // ESP32 only has 3 physical sensors, so take the first 3
+    const top3Slots = combinedSlots.slice(0, 3).map((s: any) => ({
+      id: s.id,
+      time: s.time,
+      name: s.name
+    }));
+
+    // Determine completion status for these specific slots
+    const taken: Record<string, boolean> = {};
+    top3Slots.forEach((slot: any) => {
+      taken[slot.id] = logs?.some((l) => l.slot === slot.id && l.status === "taken") || false;
+    });
 
     return NextResponse.json({
       success: true,
       deviceId,
-      morning: routine.morning,
-      afternoon: routine.afternoon,
-      night: routine.night,
       active: routine.active,
+      slots: top3Slots,
       taken,
     });
   } catch (error: any) {
