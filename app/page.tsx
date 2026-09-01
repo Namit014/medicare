@@ -63,7 +63,7 @@ export default function Dashboard() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [slots, setSlots] = useState<{ id: string, name: string, time: string, medicines: { id: string, name: string }[] }[]>([]);
+  const [slots, setSlots] = useState<{ id: string, name: string, time: string, medicines: { id: string, name: string }[], date?: string }[]>([]);
   const [dateSpecificSlots, setDateSpecificSlots] = useState<Record<string, any[]>>({});
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
